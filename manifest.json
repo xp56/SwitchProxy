@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Proxy Manager",
+  "version": "1.0",
+  "description": "A simple proxy manager extension",
+  "permissions": [
+    "proxy",
+    "storage",
+    "tabs",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_popup": "popup/index.html"
+  },
+  "background": {
+    "service_worker": "background/background.js"
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  }
+} 
