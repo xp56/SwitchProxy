@@ -1,34 +1,92 @@
+// 共享常量
+const CONSTANTS = {
+  CACHE_TTL: 30000,
+  BYPASS_CACHE_TTL: 10000
+};
+
+// 优化的bypass列表匹配器
+class BypassListMatcher {
+  constructor() {
+    this.wildcardDomains = new Set();
+    this.exactDomains = new Set();
+    this.pathPatterns = new Set();
+    this.compiled = false;
+    this.lastUpdate = 0;
+  }
+
+  compile(bypassList) {
+    if (!bypassList || bypassList.length === 0) {
+      this.clear();
+      return;
+    }
+
+    this.wildcardDomains.clear();
+    this.exactDomains.clear();
+    this.pathPatterns.clear();
+
+    for (const pattern of bypassList) {
+      if (pattern.startsWith('*.')) {
+        this.wildcardDomains.add(pattern.substring(2));
+      } else if (pattern.endsWith('/*')) {
+        this.pathPatterns.add(pattern.slice(0, -2));
+      } else {
+        this.exactDomains.add(pattern);
+      }
+    }
+
+    this.compiled = true;
+    this.lastUpdate = Date.now();
+  }
+
+  isMatch(hostname) {
+    if (!hostname || !this.compiled) return false;
+
+    if (hostname.startsWith('www.')) {
+      hostname = hostname.substring(4);
+    }
+
+    if (this.exactDomains.has(hostname)) return true;
+
+    for (const domain of this.wildcardDomains) {
+      if (hostname === domain || hostname.endsWith('.' + domain)) return true;
+    }
+
+    for (const domain of this.pathPatterns) {
+      if (hostname === domain || hostname.startsWith(domain + '/')) return true;
+    }
+
+    return false;
+  }
+
+  clear() {
+    this.wildcardDomains.clear();
+    this.exactDomains.clear();
+    this.pathPatterns.clear();
+    this.compiled = false;
+  }
+}
+
 class ProxyManager {
   constructor() {
     this.profiles = new Map();
     this.currentProfile = null;
-    this.init();
+    this.bypassMatcher = new BypassListMatcher();
+    this._initialized = false;
   }
 
-  // 添加缓存机制
-  #profileCache = new Map();
   #bypassListCache = null;
   #bypassListExpiry = 0;
 
   async init() {
-    // 初始化内置配置
-    this.profiles.set('direct', {
-      name: 'direct',
-      type: 'direct',
-      title: '直接连接'
-    });
-    
-    this.profiles.set('system', {
-      name: 'system',
-      type: 'system',
-      title: '系统代理'
-    });
+    if (this._initialized) return;
+    this._initialized = true;
+
+    this.profiles.set('direct', { name: 'direct', type: 'direct', title: '直接连接' });
+    this.profiles.set('system', { name: 'system', type: 'system', title: '系统代理' });
 
     try {
-      // 从存储中加载自定义配置
       const stored = await chrome.storage.local.get('profiles');
       if (!stored.profiles || stored.profiles.length === 0) {
-        // 如果没有配置，添加默认配置
         const defaultProfile = {
           name: 'proxy',
           type: 'fixed',
@@ -44,7 +102,6 @@ class ProxyManager {
         }
       }
 
-      // 加载当前配置
       const current = await chrome.storage.local.get('currentProfile');
       this.currentProfile = current.currentProfile || 'direct';
     } catch (error) {
@@ -52,7 +109,6 @@ class ProxyManager {
       this.currentProfile = 'direct';
     }
 
-    // 初始化时也更新图标
     await this.updateIcon(this.currentProfile);
   }
 
@@ -84,22 +140,19 @@ class ProxyManager {
 
     this.currentProfile = profileName;
     await chrome.storage.local.set({ currentProfile: profileName });
-
-    // 更新图标
     await this.updateIcon(profileName);
   }
 
   async addToNoProxy(domain) {
-    // 获取全局不代理列表
     const result = await chrome.storage.local.get('globalBypassList');
     const bypassList = result.globalBypassList || [];
     
     if (!bypassList.includes(domain)) {
       bypassList.push(domain);
-      // 更新全局不代理列表
       await chrome.storage.local.set({ globalBypassList: bypassList });
+      this.bypassMatcher.compile(bypassList);
+      this.#bypassListCache = null; // 清除缓存
       
-      // 更新当前配置
       const profile = await this.getCurrentProfile();
       if (profile) {
         profile.bypassList = bypassList;
@@ -110,14 +163,14 @@ class ProxyManager {
   }
 
   async removeFromNoProxy(domain) {
-    // 获取全局不代理列表
     const result = await chrome.storage.local.get('globalBypassList');
     const bypassList = result.globalBypassList || [];
     
     const newList = bypassList.filter(d => d !== domain);
     await chrome.storage.local.set({ globalBypassList: newList });
+    this.bypassMatcher.compile(newList);
+    this.#bypassListCache = null; // 清除缓存
     
-    // 更新当前配置
     const profile = await this.getCurrentProfile();
     if (profile) {
       profile.bypassList = newList;
@@ -127,17 +180,21 @@ class ProxyManager {
   }
 
   async setDirectProxy() {
-    await chrome.proxy.settings.set({
-      value: { mode: 'direct' },
-      scope: 'regular'
-    });
+    await chrome.proxy.settings.set({ value: { mode: 'direct' }, scope: 'regular' });
   }
 
   async setSystemProxy() {
-    await chrome.proxy.settings.set({
-      value: { mode: 'system' },
-      scope: 'regular'
-    });
+    await chrome.proxy.settings.set({ value: { mode: 'system' }, scope: 'regular' });
+  }
+
+  isHostnameBypassMatch(hostname, bypassList) {
+    if (!hostname || !bypassList) return false;
+    
+    if (!this.bypassMatcher.compiled || Date.now() - this.bypassMatcher.lastUpdate > CONSTANTS.BYPASS_CACHE_TTL) {
+      this.bypassMatcher.compile(bypassList);
+    }
+    
+    return this.bypassMatcher.isMatch(hostname);
   }
 
   async getBypassList() {
@@ -148,90 +205,34 @@ class ProxyManager {
 
     const result = await chrome.storage.local.get('globalBypassList');
     this.#bypassListCache = result.globalBypassList || [];
-    this.#bypassListExpiry = now + 5000; // 5秒缓存
+    this.#bypassListExpiry = now + CONSTANTS.CACHE_TTL;
+    this.bypassMatcher.compile(this.#bypassListCache);
+    
     return this.#bypassListCache;
-  }
-
-  // 检查域名是否匹配不代理列表中的规则
-  isHostnameBypassMatch(hostname, bypassList) {
-    if (!hostname || !bypassList) return false;
-
-    // 移除开头的 www.
-    if (hostname.startsWith('www.')) {
-      hostname = hostname.substring(4);
-    }
-
-    for (const pattern of bypassList) {
-      // 处理通配符模式
-      if (pattern.startsWith('*.')) {
-        // *.example.com 匹配 sub.example.com 和 example.com
-        const domain = pattern.substring(2);
-        if (hostname === domain || hostname.endsWith('.' + domain)) {
-          return true;
-        }
-      } 
-      // 处理路径通配符模式
-      else if (pattern.endsWith('/*')) {
-        // example.com/* 匹配 example.com 和所有子路径
-        const domain = pattern.slice(0, -2);
-        if (hostname === domain || hostname.startsWith(domain + '/')) {
-          return true;
-        }
-      }
-      // 精确匹配
-      else if (hostname === pattern) {
-        return true;
-      }
-      // 子域名匹配
-      else if (hostname.endsWith('.' + pattern)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   async setFixedProxy(profile) {
     const result = await chrome.storage.local.get('globalBypassList');
     const bypassList = result.globalBypassList || [];
 
-    // 为每个不代理域名添加通配符规则
     const expandedBypassList = bypassList.reduce((list, domain) => {
-      list.push(domain);          // 匹配域名本身
-      list.push(`${domain}/*`);   // 匹配域名下的所有路径
+      list.push(domain);
+      list.push(`${domain}/*`);
       return list;
     }, []);
 
     const config = {
       mode: 'fixed_servers',
       rules: {
-        proxyForHttp: {
-          scheme: 'http',
-          host: profile.host,
-          port: profile.port
-        },
-        proxyForHttps: {
-          scheme: 'http',
-          host: profile.host,
-          port: profile.port
-        },
-        proxyForFtp: {
-          scheme: 'http',
-          host: profile.host,
-          port: profile.port
-        },
-        fallbackProxy: {
-          scheme: 'http',
-          host: profile.host,
-          port: profile.port
-        },
+        proxyForHttp: { scheme: 'http', host: profile.host, port: profile.port },
+        proxyForHttps: { scheme: 'http', host: profile.host, port: profile.port },
+        proxyForFtp: { scheme: 'http', host: profile.host, port: profile.port },
+        fallbackProxy: { scheme: 'http', host: profile.host, port: profile.port },
         bypassList: expandedBypassList
       }
     };
 
-    await chrome.proxy.settings.set({
-      value: config,
-      scope: 'regular'
-    });
+    await chrome.proxy.settings.set({ value: config, scope: 'regular' });
   }
 
   async saveProfiles() {
@@ -241,50 +242,33 @@ class ProxyManager {
   }
 
   async updateIcon(profileName) {
-    // 获取扩展图标元素
-    const action = await chrome.action;
-    
-    // 如果是自定义代理，检查当前域名是否在不代理列表中
-    if (profileName !== 'direct' && profileName !== 'system') {
-      try {
-        // 获取当前标签页
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tabs[0]) {
-          const url = new URL(tabs[0].url);
-          let hostname = url.hostname;
-          if (hostname.startsWith('www.')) {
-            hostname = hostname.substring(4);
+    try {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tabs[0]) {
+        chrome.runtime.sendMessage({
+          type: 'updateIcon',
+          profile: profileName,
+          tabId: tabs[0].id
+        }).catch(error => {
+          if (!error.message?.includes('Receiving end does not exist')) {
+            console.error('Error sending updateIcon message:', error);
           }
-          
-          // 获取全局不代理列表
-          const bypassList = await this.getBypassList();
-          
-          // 如果当前域名在不代理列表中，使用直接连接的图标
-          if (this.isHostnameBypassMatch(hostname, bypassList)) {
-            await action.setTitle({ title: '当前网站不走代理' });
-            document.documentElement.style.setProperty('--extension-icon-color', '#757575');
-            return;
-          }
-        }
-      } catch (error) {
-        console.error('Error checking bypass list:', error);
+        });
       }
-    }
-    
-    // 如果不在不代理列表中，或者出错，则使用正常的图标逻辑
-    switch (profileName) {
-      case 'direct':
-        await action.setTitle({ title: '直接连接' });
-        document.documentElement.style.setProperty('--extension-icon-color', '#757575');
-        break;
-      case 'system':
-        await action.setTitle({ title: '系统代理' });
-        document.documentElement.style.setProperty('--extension-icon-color', '#1976d2');
-        break;
-      default:
-        await action.setTitle({ title: '自定义代理' });
-        document.documentElement.style.setProperty('--extension-icon-color', '#4caf50');
-        break;
+    } catch (error) {
+      console.error('Error updating icon:', error);
     }
   }
-} 
+
+  // 检查代理名称是否已存在
+  hasProfile(name) {
+    return this.profiles.has(name);
+  }
+
+  // 重新加载配置（用于外部更新后刷新）
+  async reload() {
+    this._initialized = false;
+    this.profiles.clear();
+    await this.init();
+  }
+}

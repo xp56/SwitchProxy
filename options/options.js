@@ -3,60 +3,53 @@ class OptionsManager {
     this.proxyManager = null;
     this.currentSection = 'proxy';
     this.editingProfile = null;
+    this.logUpdateInterval = null;
     this.init();
   }
   
   async init() {
     this.proxyManager = new ProxyManager();
+    await this.proxyManager.init();
     this.attachEventListeners();
     await this.loadProxies();
     await this.loadBypassList();
-    await this.loadLastNoProxy();
     this.initSidebar();
   }
   
   initSidebar() {
-    // 侧边栏导航切换
     document.querySelectorAll('.nav-item').forEach(item => {
       item.addEventListener('click', () => {
         const section = item.dataset.section;
-        this.switchSection(section);
+        if (section) this.switchSection(section);
       });
     });
   }
   
   switchSection(section) {
-    // 更新导航项的激活状态
     document.querySelectorAll('.nav-item').forEach(item => {
       item.classList.toggle('active', item.dataset.section === section);
     });
     
-    // 显示对应的内容区域
     document.querySelectorAll('.section').forEach(el => {
       el.style.display = el.id === `${section}-section` ? 'block' : 'none';
     });
     
     this.currentSection = section;
     
-    // 如果切换到日志部分，开始定期更新
     if (section === 'logs') {
       this.updateLogs();
-      // 每5秒更新一次日志
       this.logUpdateInterval = setInterval(() => this.updateLogs(), 5000);
-    } else {
-      // 切换到其他部分时停止更新
-      if (this.logUpdateInterval) {
-        clearInterval(this.logUpdateInterval);
-      }
+    } else if (this.logUpdateInterval) {
+      clearInterval(this.logUpdateInterval);
+      this.logUpdateInterval = null;
     }
   }
   
   attachEventListeners() {
-    document.getElementById('add-proxy').addEventListener('click', () => {
-      this.addProxy();
-    });
+    // 添加代理
+    document.getElementById('add-proxy').addEventListener('click', () => this.addProxy());
 
-    // 添加不代理地址的事件监听
+    // 添加不代理地址
     document.getElementById('add-bypass').addEventListener('click', async () => {
       const domain = document.getElementById('bypass-domain').value.trim();
       if (domain) {
@@ -65,148 +58,45 @@ class OptionsManager {
       }
     });
 
-    // 添加编辑相关的事件监听器
-    document.getElementById('save-edit').addEventListener('click', () => {
-      this.saveEdit();
-    });
-
-    document.getElementById('cancel-edit').addEventListener('click', () => {
-      this.closeEditModal();
-    });
-
-    // 点击弹窗外部关闭弹窗
+    // 编辑相关
+    document.getElementById('save-edit').addEventListener('click', () => this.saveEdit());
+    document.getElementById('cancel-edit').addEventListener('click', () => this.closeEditModal());
     document.getElementById('edit-modal').addEventListener('click', (e) => {
-      if (e.target.id === 'edit-modal') {
-        this.closeEditModal();
-      }
+      if (e.target.id === 'edit-modal') this.closeEditModal();
     });
 
-    // 添加清空日志按钮的事件监听
+    // 清空日志
     const clearLogsButton = document.getElementById('clear-logs');
     if (clearLogsButton) {
       clearLogsButton.addEventListener('click', async () => {
         try {
-          // 发送清空日志请求
-          const response = await new Promise((resolve, reject) => {
-            try {
-              chrome.runtime.sendMessage({ type: 'clearLogs' }, (response) => {
-                if (chrome.runtime.lastError) {
-                  reject(chrome.runtime.lastError);
-                } else {
-                  resolve(response);
-                }
-              });
-            } catch (error) {
-              reject(error);
-            }
-          });
-
-          if (response?.success) {
-            // 立即更新日志显示
-            await this.updateLogs();
-          } else {
-            console.error('Failed to clear logs:', response);
-            throw new Error('Failed to clear logs');
-          }
+          const response = await this.sendMessage({ type: 'clearLogs' });
+          if (response?.success) await this.updateLogs();
         } catch (error) {
           console.error('Error clearing logs:', error);
         }
       });
     }
 
-    // 添加导入按钮事件监听
+    // 导入导出
     document.getElementById('import-bypass').addEventListener('click', () => {
       document.getElementById('import-bypass-input').click();
     });
 
-    // 添加文件输入事件监听
-    document.getElementById('import-bypass-input').addEventListener('change', async (event) => {
-      try {
-        const file = event.target.files[0];
-        if (!file) return;
-        
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-          try {
-            const importData = JSON.parse(e.target.result);
-            
-            // 验证导入数据的格式
-            if (!importData.version || !Array.isArray(importData.bypassList)) {
-              throw new Error('Invalid file format');
-            }
-            
-            // 获取当前列表
-            const result = await chrome.storage.local.get('globalBypassList');
-            const currentList = result.globalBypassList || [];
-            
-            // 合并列表，去重
-            const mergedList = [...new Set([...currentList, ...importData.bypassList])];
-            
-            // 保存合并后的列表
-            await chrome.storage.local.set({ globalBypassList: mergedList });
-            
-            // 更新界面
-            await this.loadBypassList();
-            
-            // 更新当前配置并重新应用
-            const proxyManager = new ProxyManager();
-            await proxyManager.init();
-            const currentProfile = await proxyManager.getCurrentProfile();
-            if (currentProfile) {
-              await proxyManager.applyProfile(currentProfile.name);
-            }
-            
-            alert('导入成功！');
-          } catch (parseError) {
-            console.error('Error parsing import file:', parseError);
-            alert('导入文件格式错误，请检查文件内容');
-          }
-        };
-        
-        reader.readAsText(file);
-      } catch (error) {
-        console.error('Error importing bypass list:', error);
-        alert('导入失败，请重试');
-      } finally {
-        // 清理文件输入，允许重复导入相同文件
-        event.target.value = '';
-      }
-    });
+    document.getElementById('import-bypass-input').addEventListener('change', (e) => this.handleImport(e));
+    document.getElementById('export-bypass').addEventListener('click', () => this.handleExport());
+  }
 
-    // 添加导出按钮事件监听
-    document.getElementById('export-bypass').addEventListener('click', async () => {
-      try {
-        const result = await chrome.storage.local.get('globalBypassList');
-        const bypassList = result.globalBypassList || [];
-        
-        // 创建导出数据
-        const exportData = {
-          version: '1.0',
-          timestamp: new Date().toISOString(),
-          bypassList: bypassList.sort() // 排序以保持一致性
-        };
-        
-        // 转换为 JSON 字符串，使用 2 空格缩进使导出文件更易读
-        const jsonString = JSON.stringify(exportData, null, 2);
-        
-        // 创建下载链接
-        const blob = new Blob([jsonString], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        
-        // 创建临时下载链接并点击
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `proxy_bypass_list_${new Date().toISOString().slice(0,10)}.json`;
-        document.body.appendChild(a);
-        a.click();
-        
-        // 清理
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      } catch (error) {
-        console.error('Error exporting bypass list:', error);
-        alert('导出失败，请重试');
-      }
+  // 统一的消息发送方法
+  sendMessage(message) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+        } else {
+          resolve(response);
+        }
+      });
     });
   }
   
@@ -237,25 +127,12 @@ class OptionsManager {
       </div>
     `;
 
-    // 添加编辑按钮的事件监听器
-    const editButton = proxyItem.querySelector('.btn-edit');
-    editButton.addEventListener('click', () => {
-      this.editProxy(profile.name);
-    });
-
-    // 添加删除按钮的事件监听器
-    const deleteButton = proxyItem.querySelector('.btn-delete');
-    deleteButton.addEventListener('click', async () => {
-      // 检查是否是当前使用的配置
-      const currentProfile = await chrome.storage.local.get('currentProfile');
-      if (currentProfile.currentProfile === profile.name) {
-        // 如果是当前使用的配置，先切换到直接连接
-        const proxyManager = new ProxyManager();
-        await proxyManager.init();
-        await proxyManager.applyProfile('direct');
+    proxyItem.querySelector('.btn-edit').addEventListener('click', () => this.editProxy(profile.name));
+    proxyItem.querySelector('.btn-delete').addEventListener('click', async () => {
+      const currentProfileResult = await chrome.storage.local.get('currentProfile');
+      if (currentProfileResult.currentProfile === profile.name) {
+        await this.proxyManager.applyProfile('direct');
       }
-      
-      // 删除配置
       await this.deleteProxy(profile.name);
     });
 
@@ -263,12 +140,18 @@ class OptionsManager {
   }
   
   async addProxy() {
-    const name = document.getElementById('proxy-name').value;
-    const host = document.getElementById('proxy-host').value;
-    const port = document.getElementById('proxy-port').value;
+    const name = document.getElementById('proxy-name').value.trim();
+    const host = document.getElementById('proxy-host').value.trim();
+    const port = document.getElementById('proxy-port').value.trim();
     
     if (!name || !host || !port) {
       alert('请填写完整信息');
+      return;
+    }
+
+    // 检查重名
+    if (this.proxyManager.hasProfile(name) || name === 'direct' || name === 'system') {
+      alert('代理名称已存在，请使用其他名称');
       return;
     }
     
@@ -284,9 +167,9 @@ class OptionsManager {
     profiles.push(profile);
     
     await chrome.storage.local.set({ profiles });
+    await this.proxyManager.reload();
     this.addProxyToList(profile);
     
-    // 清空表单
     document.getElementById('proxy-name').value = '';
     document.getElementById('proxy-host').value = '';
     document.getElementById('proxy-port').value = '';
@@ -296,90 +179,96 @@ class OptionsManager {
     const stored = await chrome.storage.local.get('profiles');
     const profiles = stored.profiles.filter(p => p.name !== name);
     await chrome.storage.local.set({ profiles });
+    await this.proxyManager.reload();
     await this.loadProxies();
   }
-  
-  async loadLastNoProxy() {
-    const result = await chrome.storage.local.get('lastNoProxyDomain');
-    if (result.lastNoProxyDomain) {
-      document.getElementById('proxy-bypass').value = result.lastNoProxyDomain;
-      // 清除保存的不代理域名（防止后续重复加载）
-      await chrome.storage.local.remove('lastNoProxyDomain');
-    }
-  }
 
-  // 加载不代理列表
   async loadBypassList() {
     const result = await chrome.storage.local.get('globalBypassList');
     const bypassList = result.globalBypassList || [];
     this.updateBypassListUI(bypassList);
   }
 
-  // 更新不代理列表UI
   updateBypassListUI(bypassList) {
     const listElement = document.getElementById('bypass-list');
     listElement.innerHTML = '';
+
+    // 按基础域名分组
+    const grouped = this.groupBypassList(bypassList);
     
-    bypassList.forEach(domain => {
+    for (const [baseDomain, patterns] of grouped) {
       const item = document.createElement('div');
-      item.className = 'proxy-item';
+      item.className = 'proxy-item bypass-group';
       item.innerHTML = `
-        <div>${domain}</div>
-        <button class="btn btn-delete" data-domain="${domain}">删除</button>
+        <div class="bypass-info">
+          <strong>${baseDomain}</strong>
+          <div class="bypass-patterns">${patterns.join(', ')}</div>
+        </div>
+        <button class="btn btn-delete" data-domain="${baseDomain}">删除全部</button>
       `;
 
-      // 添加删除按钮的事件监听器
-      const deleteButton = item.querySelector('.btn-delete');
-      deleteButton.addEventListener('click', () => {
-        this.removeBypassDomain(domain);
+      item.querySelector('.btn-delete').addEventListener('click', () => {
+        this.removeBypassDomainGroup(baseDomain, patterns);
       });
 
       listElement.appendChild(item);
-    });
+    }
   }
 
-  // 添加不代理域名
+  // 将 bypass 列表按基础域名分组
+  groupBypassList(bypassList) {
+    const groups = new Map();
+    
+    for (const pattern of bypassList) {
+      let baseDomain = pattern;
+      if (pattern.startsWith('*.')) {
+        baseDomain = pattern.substring(2);
+      } else if (pattern.endsWith('/*')) {
+        baseDomain = pattern.slice(0, -2);
+      }
+      
+      if (!groups.has(baseDomain)) {
+        groups.set(baseDomain, []);
+      }
+      groups.get(baseDomain).push(pattern);
+    }
+    
+    return groups;
+  }
+
   async addBypassDomain(domain) {
     try {
       const result = await chrome.storage.local.get('globalBypassList');
       const bypassList = result.globalBypassList || [];
       
-      // 处理域名格式
       domain = domain.trim().toLowerCase();
-      
-      // 移除开头的 www.
       if (domain.startsWith('www.')) {
         domain = domain.substring(4);
       }
 
-      // 检查是否已存在匹配的规则
-      if (!bypassList.some(pattern => {
-        if (pattern === domain) return true;
-        if (pattern === `*.${domain}`) return true;
-        if (pattern === `${domain}/*`) return true;
-        return false;
-      })) {
-        // 添加基本域名
-        bypassList.push(domain);
-        
-        // 可选：自动添加通配符版本
-        bypassList.push(`*.${domain}`);
-        bypassList.push(`${domain}/*`);
-        
-        await chrome.storage.local.set({ globalBypassList: bypassList });
-        this.updateBypassListUI(bypassList);
+      // 检查是否已存在
+      if (bypassList.some(p => p === domain || p === `*.${domain}` || p === `${domain}/*`)) {
+        alert('该域名已在不代理列表中');
+        return;
       }
+
+      bypassList.push(domain);
+      bypassList.push(`*.${domain}`);
+      bypassList.push(`${domain}/*`);
+      
+      await chrome.storage.local.set({ globalBypassList: bypassList });
+      this.updateBypassListUI(bypassList);
     } catch (error) {
       console.error('Error adding bypass domain:', error);
     }
   }
 
-  // 删除不代理域名
-  async removeBypassDomain(domain) {
+  // 批量删除域名组
+  async removeBypassDomainGroup(baseDomain, patterns) {
     const result = await chrome.storage.local.get('globalBypassList');
     const bypassList = result.globalBypassList || [];
     
-    const newList = bypassList.filter(d => d !== domain);
+    const newList = bypassList.filter(d => !patterns.includes(d));
     await chrome.storage.local.set({ globalBypassList: newList });
     this.updateBypassListUI(newList);
   }
@@ -390,21 +279,10 @@ class OptionsManager {
       const profile = stored.profiles.find(p => p.name === name);
       if (profile) {
         this.editingProfile = profile;
-        
-        // 填充编辑表单
         document.getElementById('edit-proxy-name').value = profile.name;
         document.getElementById('edit-proxy-host').value = profile.host;
         document.getElementById('edit-proxy-port').value = profile.port;
-        
-        // 显示弹窗
-        const modal = document.getElementById('edit-modal');
-        if (modal) {
-          modal.style.display = 'block';
-        } else {
-          console.error('Modal element not found');
-        }
-      } else {
-        console.error('Profile not found:', name);
+        document.getElementById('edit-modal').style.display = 'block';
       }
     } catch (error) {
       console.error('Error in editProxy:', error);
@@ -413,48 +291,41 @@ class OptionsManager {
 
   async saveEdit() {
     try {
-      const name = document.getElementById('edit-proxy-name').value;
-      const host = document.getElementById('edit-proxy-host').value;
-      const port = document.getElementById('edit-proxy-port').value;
+      const name = document.getElementById('edit-proxy-name').value.trim();
+      const host = document.getElementById('edit-proxy-host').value.trim();
+      const port = document.getElementById('edit-proxy-port').value.trim();
       
       if (!name || !host || !port) {
         alert('请填写完整信息');
+        return;
+      }
+
+      // 检查重名（排除当前编辑的配置）
+      if (name !== this.editingProfile.name && 
+          (this.proxyManager.hasProfile(name) || name === 'direct' || name === 'system')) {
+        alert('代理名称已存在，请使用其他名称');
         return;
       }
       
       const stored = await chrome.storage.local.get('profiles');
       const profiles = stored.profiles || [];
       
-      // 更新配置
       const index = profiles.findIndex(p => p.name === this.editingProfile.name);
       if (index !== -1) {
-        // 保存旧的配置名称，用于检查是否是当前使用的配置
         const oldName = this.editingProfile.name;
         
-        // 更新配置
-        const updatedProfile = {
-          ...this.editingProfile,
-          name,
-          host,
-          port: parseInt(port)
-        };
-        
-        profiles[index] = updatedProfile;
+        profiles[index] = { ...this.editingProfile, name, host, port: parseInt(port) };
         await chrome.storage.local.set({ profiles });
         
-        // 检查是否是当前使用的配置
-        const currentProfile = await chrome.storage.local.get('currentProfile');
-        if (currentProfile.currentProfile === oldName) {
-          // 如果是当前使用的配置，立即应用新的配置
-          const proxyManager = new ProxyManager();
-          await proxyManager.init(); // 确保初始化完成
-          
-          // 使用 applyProfile 而不是 setFixedProxy
+        const currentProfileResult = await chrome.storage.local.get('currentProfile');
+        if (currentProfileResult.currentProfile === oldName) {
           if (oldName !== name) {
-            // 如果名称改变了，需要先更新 currentProfile
             await chrome.storage.local.set({ currentProfile: name });
           }
-          await proxyManager.applyProfile(name);
+          await this.proxyManager.reload();
+          await this.proxyManager.applyProfile(name);
+        } else {
+          await this.proxyManager.reload();
         }
         
         await this.loadProxies();
@@ -466,48 +337,95 @@ class OptionsManager {
   }
 
   closeEditModal() {
+    document.getElementById('edit-modal').style.display = 'none';
+    this.editingProfile = null;
+  }
+
+  async handleImport(event) {
     try {
-      const modal = document.getElementById('edit-modal');
-      if (modal) {
-        modal.style.display = 'none';
-        this.editingProfile = null;
-      }
+      const file = event.target.files[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        try {
+          const importData = JSON.parse(e.target.result);
+          
+          if (!importData.version || !Array.isArray(importData.bypassList)) {
+            throw new Error('Invalid file format');
+          }
+          
+          const result = await chrome.storage.local.get('globalBypassList');
+          const currentList = result.globalBypassList || [];
+          const mergedList = [...new Set([...currentList, ...importData.bypassList])];
+          
+          await chrome.storage.local.set({ globalBypassList: mergedList });
+          await this.loadBypassList();
+          
+          const currentProfile = await this.proxyManager.getCurrentProfile();
+          if (currentProfile) {
+            await this.proxyManager.applyProfile(currentProfile.name);
+          }
+          
+          alert('导入成功！');
+        } catch (parseError) {
+          console.error('Error parsing import file:', parseError);
+          alert('导入文件格式错误，请检查文件内容');
+        }
+      };
+      
+      reader.readAsText(file);
     } catch (error) {
-      console.error('Error in closeEditModal:', error);
+      console.error('Error importing bypass list:', error);
+      alert('导入失败，请重试');
+    } finally {
+      event.target.value = '';
+    }
+  }
+
+  async handleExport() {
+    try {
+      const result = await chrome.storage.local.get('globalBypassList');
+      const bypassList = result.globalBypassList || [];
+      
+      const exportData = {
+        version: '1.0',
+        timestamp: new Date().toISOString(),
+        bypassList: bypassList.sort()
+      };
+      
+      const jsonString = JSON.stringify(exportData, null, 2);
+      const blob = new Blob([jsonString], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `proxy_bypass_list_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error exporting bypass list:', error);
+      alert('导出失败，请重试');
     }
   }
 
   async updateLogs() {
     try {
-      const logs = await new Promise((resolve, reject) => {
-        try {
-          chrome.runtime.sendMessage({ type: 'getProxyLogs' }, (response) => {
-            if (chrome.runtime.lastError) {
-              reject(chrome.runtime.lastError);
-            } else {
-              resolve(response);
-            }
-          });
-        } catch (error) {
-          reject(error);
-        }
-      });
+      const logs = await this.sendMessage({ type: 'getProxyLogs' });
 
-      // 辅助函数：格式化域名显示
       const formatDomain = (domain) => {
         if (domain.length > 40) {
-          const start = domain.substring(0, 20);
-          const end = domain.substring(domain.length - 20);
-          return `${start}...${end}`;
+          return `${domain.substring(0, 20)}...${domain.substring(domain.length - 20)}`;
         }
         return domain;
       };
 
-      // 更新走代理的域名列表
       const proxiedList = document.getElementById('proxied-list');
       if (proxiedList) {
         if (logs.proxied.length === 0) {
-          // 如果没有日志，显示空状态
           proxiedList.innerHTML = `
             <div class="log-item empty-state">
               <div class="log-item-content">
@@ -518,75 +436,47 @@ class OptionsManager {
             </div>
           `;
         } else {
-          // 显示日志列表
           proxiedList.innerHTML = logs.proxied.map(domain => `
             <div class="log-item">
               <div class="log-item-content">
                 <div class="domain-info">
-                  <span class="domain-text" title="${domain}">
-                    ${formatDomain(domain)}
-                  </span>
+                  <span class="domain-text" title="${domain}">${formatDomain(domain)}</span>
                 </div>
-                <button class="btn btn-small btn-bypass" data-domain="${domain}">
-                  添加到不代理
-                </button>
+                <button class="btn btn-small btn-bypass" data-domain="${domain}">添加到不代理</button>
               </div>
             </div>
           `).join('');
-        }
 
-        // 添加事件监听器
-        proxiedList.querySelectorAll('.btn-bypass').forEach(button => {
-          button.addEventListener('click', async () => {
-            const domain = button.dataset.domain;
-            try {
-              // 1. 添加到不代理列表
-              await this.addBypassDomain(domain);
-              
-              // 2. 从日志中删除该域名
-              await new Promise((resolve) => {
-                chrome.runtime.sendMessage({ 
-                  type: 'removeDomainFromLogs', 
-                  domain: domain 
-                }, resolve);
-              });
+          proxiedList.querySelectorAll('.btn-bypass').forEach(button => {
+            button.addEventListener('click', async () => {
+              const domain = button.dataset.domain;
+              try {
+                await this.addBypassDomain(domain);
+                await this.sendMessage({ type: 'removeDomainFromLogs', domain });
 
-              // 3. 更新当前配置并重新应用
-              const proxyManager = new ProxyManager();
-              await proxyManager.init();
-              const currentProfile = await proxyManager.getCurrentProfile();
-              if (currentProfile) {
-                await proxyManager.applyProfile(currentProfile.name);
-              }
-
-              // 4. 更新日志显示
-              await this.updateLogs();
-              
-              // 5. 更新不代理列表显示
-              await this.loadBypassList();
-
-              // 6. 通知后台更新目标页面的代理设置
-              chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-                if (tabs[0]) {
-                  // 发送消息给后台更新目标页面的代理设置
-                  chrome.runtime.sendMessage({
-                    type: 'updateTargetPageProxy',
-                    tabId: tabs[0].id
-                  });
+                const currentProfile = await this.proxyManager.getCurrentProfile();
+                if (currentProfile) {
+                  await this.proxyManager.applyProfile(currentProfile.name);
                 }
-              });
-            } catch (error) {
-              console.error('Error handling bypass click:', error);
-            }
+
+                await this.updateLogs();
+                await this.loadBypassList();
+
+                const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+                if (tabs[0]) {
+                  this.sendMessage({ type: 'updateTargetPageProxy', tabId: tabs[0].id });
+                }
+              } catch (error) {
+                console.error('Error handling bypass click:', error);
+              }
+            });
           });
-        });
+        }
       }
 
-      // 更新不走代理的域名列表
       const bypassedList = document.getElementById('bypassed-list');
       if (bypassedList) {
         if (logs.bypassed.length === 0) {
-          // 如果没有日志，显示空状态
           bypassedList.innerHTML = `
             <div class="log-item empty-state">
               <div class="log-item-content">
@@ -601,9 +491,7 @@ class OptionsManager {
             <div class="log-item">
               <div class="log-item-content">
                 <div class="domain-info">
-                  <span class="domain-text" title="${domain}">
-                    ${formatDomain(domain)}
-                  </span>
+                  <span class="domain-text" title="${domain}">${formatDomain(domain)}</span>
                 </div>
               </div>
             </div>
@@ -616,6 +504,5 @@ class OptionsManager {
   }
 }
 
-// 初始化选项管理器
 const optionsManager = new OptionsManager();
-window.optionsManager = optionsManager; // 导出到全局作用域以供 onclick 使用 
+window.optionsManager = optionsManager;
