@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <title>代理管理器设置</title>
+  <link rel="stylesheet" href="../shared/icons.css">
   <style>
     body {
       margin: 0;
@@ -72,6 +73,7 @@
       padding: 8px;
       border: 1px solid #ddd;
       border-radius: 4px;
+      box-sizing: border-box;
     }
     
     .btn {
@@ -87,7 +89,7 @@
       background: #1565c0;
     }
     
-    .proxy-list {
+    .proxy-list, .bypass-list {
       margin-top: 20px;
     }
     
@@ -100,102 +102,22 @@
       justify-content: space-between;
       align-items: center;
     }
-    
-    /* 复用 popup 的图标样式 */
-    [class^="icon-"] {
-      width: 16px;
-      height: 16px;
-      display: inline-block;
-      position: relative;
+
+    .proxy-item .actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .bypass-group .bypass-info {
+      flex: 1;
+    }
+
+    .bypass-group .bypass-patterns {
+      font-size: 12px;
+      color: #666;
+      margin-top: 4px;
     }
     
-    /* 直接连接图标 */
-    .icon-direct {
-      position: relative;
-      width: 16px;
-      height: 16px;
-    }
-    
-    .icon-direct::before {
-      content: '';
-      position: absolute;
-      width: 12px;
-      height: 12px;
-      border: 2px solid #757575;
-      border-radius: 50%;
-      top: 0;
-      left: 0;
-    }
-    
-    .icon-direct::after {
-      content: '';
-      position: absolute;
-      width: 12px;
-      height: 2px;
-      background: #757575;
-      top: 7px;
-      left: 2px;
-    }
-    
-    /* 系统代理图标 */
-    .icon-system {
-      position: relative;
-      width: 16px;
-      height: 16px;
-    }
-    
-    .icon-system::before {
-      content: '';
-      position: absolute;
-      width: 12px;
-      height: 12px;
-      border: 2px solid #1976d2;
-      border-radius: 50%;
-      top: 0;
-      left: 0;
-    }
-    
-    .icon-system::after {
-      content: '';
-      position: absolute;
-      width: 6px;
-      height: 6px;
-      border: 2px solid #1976d2;
-      border-radius: 50%;
-      top: 3px;
-      left: 3px;
-    }
-    
-    /* 自定义代理图标 */
-    .icon-custom-proxy {
-      position: relative;
-      width: 16px;
-      height: 16px;
-    }
-    
-    .icon-custom-proxy::before {
-      content: '';
-      position: absolute;
-      width: 12px;
-      height: 12px;
-      border: 2px solid #4caf50;
-      border-radius: 50%;
-      top: 0;
-      left: 0;
-    }
-    
-    .icon-custom-proxy::after {
-      content: '';
-      position: absolute;
-      width: 8px;
-      height: 8px;
-      background: #a5d6a7;
-      border-radius: 50%;
-      top: 4px;
-      left: 4px;
-    }
-    
-    /* 在现有样式后添加 */
     .modal {
       display: none;
       position: fixed;
@@ -233,11 +155,6 @@
       background: #616161;
     }
 
-    .proxy-item .actions {
-      display: flex;
-      gap: 8px;
-    }
-
     .btn-edit {
       background: #2196f3;
     }
@@ -246,7 +163,14 @@
       background: #1976d2;
     }
 
-    /* 在现有样式后添加 */
+    .btn-delete {
+      background: #f44336;
+    }
+
+    .btn-delete:hover {
+      background: #d32f2f;
+    }
+
     .logs-container {
       display: flex;
       gap: 20px;
@@ -314,40 +238,6 @@
       background: #4caf50;
     }
 
-    .btn:hover {
-      opacity: 0.9;
-    }
-
-    /* 日志图标 */
-    .icon-logs {
-      position: relative;
-      width: 16px;
-      height: 16px;
-    }
-    
-    .icon-logs::before {
-      content: '';
-      position: absolute;
-      width: 12px;
-      height: 14px;
-      border: 2px solid currentColor;
-      border-radius: 2px;
-      top: 0;
-      left: 0;
-    }
-    
-    .icon-logs::after {
-      content: '';
-      position: absolute;
-      width: 8px;
-      height: 2px;
-      background: currentColor;
-      top: 4px;
-      left: 4px;
-      box-shadow: 0 4px 0 currentColor;
-    }
-
-    /* 日志页面头部样式 */
     .section-header {
       display: flex;
       justify-content: space-between;
@@ -363,14 +253,6 @@
       background: #d32f2f;
     }
 
-    /* 相关域名样式 */
-    .related-domains {
-      font-size: 12px;
-      color: #666;
-      margin-top: 4px;
-    }
-
-    /* 不代理列表操作按钮样式 */
     .bypass-actions {
       display: flex;
       gap: 10px;
@@ -390,11 +272,6 @@
     
     .btn-import:hover {
       background: #43a047;
-    }
-
-    /* 添加鼠标悬停提示的样式 */
-    .domain-text:hover {
-      cursor: default;
     }
 
     .empty-state {
@@ -438,14 +315,12 @@
             <input type="text" id="proxy-name" class="form-control" placeholder="代理名称" style="margin-bottom: 10px;">
             <input type="text" id="proxy-host" class="form-control" placeholder="代理服务器地址" style="margin-bottom: 10px;">
             <input type="number" id="proxy-port" class="form-control" placeholder="端口" style="margin-bottom: 10px;">
-            <input type="text" id="proxy-bypass" class="form-control" placeholder="不代理域名 (多个以逗号分隔)" style="margin-bottom: 10px;">
             <button id="add-proxy" class="btn">添加</button>
           </div>
         </div>
         
-        <div class="proxy-list" id="proxy-list">
-          <!-- 代理列表将在这里动态生成 -->
-        </div>
+        <div class="proxy-list" id="proxy-list"></div>
+        
         <!-- 编辑配置的弹窗 -->
         <div class="modal" id="edit-modal">
           <div class="modal-content">
@@ -481,18 +356,7 @@
           </div>
         </div>
         
-        <div class="bypass-list" id="bypass-list">
-          <!-- 不代理列表将在这里动态生成 -->
-        </div>
-      </div>
-      
-      <!-- 自动切换部分 -->
-      <div class="section" id="auto-switch-section" style="display: none;">
-        <h1>自动切换</h1>
-        <div class="form-group">
-          <label>规则设置</label>
-          <!-- 自动切换的设置将在这里添加 -->
-        </div>
+        <div class="bypass-list" id="bypass-list"></div>
       </div>
       
       <!-- 代理日志部分 -->
@@ -518,4 +382,4 @@
   <script src="../popup/js/proxy.js"></script>
   <script src="options.js"></script>
 </body>
-</html> 
+</html>
